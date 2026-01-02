@@ -1,6 +1,6 @@
 import Foundation
 import Combine
-import CoreWLAN
+import Network
 
 /// ProxyService: 시스템 프록시 설정을 관리하는 핵심 서비스
 /// networksetup 셸 명령어를 사용하여 HTTP/HTTPS 프록시를 제어합니다.
@@ -15,24 +15,14 @@ class ProxyService: ObservableObject {
     /// 현재 감지된 네트워크 서비스 이름 (예: "Wi-Fi")
     @Published var currentNetworkService: String = ""
     
-    /// 현재 연결된 Wi-Fi SSID
-    @Published var currentSSID: String = ""
-    
     /// 프록시 서버 IP 주소
     @Published var proxyIP: String = "" {
-        didSet { 
-            saveSettings()
-            // 현재 SSID가 있으면 프로필도 자동 저장
-            saveCurrentProfileIfNeeded()
-        }
+        didSet { saveSettings() }
     }
     
     /// 프록시 서버 포트
     @Published var proxyPort: String = "" {
-        didSet { 
-            saveSettings()
-            saveCurrentProfileIfNeeded()
-        }
+        didSet { saveSettings() }
     }
     
     /// 로딩 상태 (UI에서 스피너 표시용)
@@ -44,13 +34,14 @@ class ProxyService: ObservableObject {
     /// 마지막 상태 업데이트 시간
     @Published var lastUpdated: Date?
     
-    /// SSID 프로필이 자동 적용되었는지 여부
-    @Published var profileAutoApplied: Bool = false
+    /// 로그 메시지 (디버깅용)
+    @Published var logMessages: [String] = []
     
-    // MARK: - Profile Store
+    /// 인터넷 연결 상태
+    @Published var isInternetConnected: Bool = true
     
-    /// SSID별 프록시 프로필 저장소
-    let profileStore = ProxyProfileStore()
+    /// 인터넷 끊김 시작 시간
+    @Published var disconnectedSince: Date?
     
     // MARK: - Private Properties
     
@@ -58,7 +49,12 @@ class ProxyService: ObservableObject {
     private let proxyIPKey = "ProxyFlow.proxyIP"
     private let proxyPortKey = "ProxyFlow.proxyPort"
     private let turnOffOnExitKey = "ProxyFlow.turnOffOnExit"
-    private let autoApplyProfileKey = "ProxyFlow.autoApplyProfile"
+    private let autoOffOnDisconnectKey = "ProxyFlow.autoOffOnDisconnect"
+    private let autoOffTimeoutKey = "ProxyFlow.autoOffTimeout"
+    
+    private var networkMonitor: NWPathMonitor?
+    private var monitorQueue = DispatchQueue(label: "NetworkMonitor")
+    private var disconnectTimer: Timer?
     
     /// 앱 종료 시 프록시 끄기 옵션
     var turnOffProxyOnExit: Bool {
@@ -66,34 +62,116 @@ class ProxyService: ObservableObject {
         set { userDefaults.set(newValue, forKey: turnOffOnExitKey) }
     }
     
-    /// SSID 프로필 자동 적용 옵션
-    var autoApplySSIDProfile: Bool {
+    /// 인터넷 끊김 시 프록시 자동 끄기 옵션
+    var autoOffOnDisconnect: Bool {
         get { 
-            // 기본값: true
-            if userDefaults.object(forKey: autoApplyProfileKey) == nil {
-                return true
+            if userDefaults.object(forKey: autoOffOnDisconnectKey) == nil {
+                return true // 기본값: 활성화
             }
-            return userDefaults.bool(forKey: autoApplyProfileKey) 
+            return userDefaults.bool(forKey: autoOffOnDisconnectKey) 
         }
-        set { userDefaults.set(newValue, forKey: autoApplyProfileKey) }
+        set { userDefaults.set(newValue, forKey: autoOffOnDisconnectKey) }
+    }
+    
+    /// 자동 끄기 타임아웃 (초) - 기본 120초 (2분)
+    var autoOffTimeout: Int {
+        get { 
+            let value = userDefaults.integer(forKey: autoOffTimeoutKey)
+            return value > 0 ? value : 120
+        }
+        set { userDefaults.set(newValue, forKey: autoOffTimeoutKey) }
     }
     
     // MARK: - Initialization
     
     init() {
+        log("ProxyService 초기화 시작")
         loadSettings()
+        startNetworkMonitoring()
         
         // 초기 상태 확인
         Task {
             await detectNetworkService()
-            await detectCurrentSSID()
             await refreshProxyStatus()
-            
-            // SSID 프로필 자동 적용
-            if autoApplySSIDProfile {
-                applyProfileForCurrentSSID()
+            log("ProxyService 초기화 완료")
+        }
+    }
+    
+    deinit {
+        networkMonitor?.cancel()
+        disconnectTimer?.invalidate()
+    }
+    
+    // MARK: - Network Monitoring
+    
+    private func startNetworkMonitoring() {
+        networkMonitor = NWPathMonitor()
+        networkMonitor?.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                self?.handleNetworkChange(path: path)
             }
         }
+        networkMonitor?.start(queue: monitorQueue)
+        log("네트워크 모니터링 시작")
+    }
+    
+    private func handleNetworkChange(path: NWPath) {
+        let wasConnected = isInternetConnected
+        isInternetConnected = path.status == .satisfied
+        
+        log("네트워크 상태 변경: \(isInternetConnected ? "연결됨" : "끊김")")
+        
+        if !isInternetConnected && wasConnected {
+            // 인터넷이 끊김
+            disconnectedSince = Date()
+            startDisconnectTimer()
+        } else if isInternetConnected {
+            // 인터넷 복구됨
+            disconnectedSince = nil
+            stopDisconnectTimer()
+        }
+    }
+    
+    private func startDisconnectTimer() {
+        guard autoOffOnDisconnect, isProxyEnabled else { return }
+        
+        stopDisconnectTimer()
+        
+        log("인터넷 끊김 감지 - \(autoOffTimeout)초 후 프록시 자동 끄기 예정")
+        
+        disconnectTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(autoOffTimeout), repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self else { return }
+                
+                // 여전히 끊겨있고 프록시가 켜져있다면 끄기
+                if !self.isInternetConnected && self.isProxyEnabled {
+                    self.log("⚠️ 인터넷 \(self.autoOffTimeout)초 이상 끊김 - 프록시 자동 끄기")
+                    self.errorMessage = "인터넷 끊김으로 프록시가 자동으로 꺼졌습니다"
+                    await self.toggleProxy()
+                }
+            }
+        }
+    }
+    
+    private func stopDisconnectTimer() {
+        disconnectTimer?.invalidate()
+        disconnectTimer = nil
+    }
+    
+    // MARK: - Logging
+    
+    private func log(_ message: String) {
+        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        let logEntry = "[\(timestamp)] \(message)"
+        logMessages.append(logEntry)
+        
+        // 최대 50개 로그만 유지
+        if logMessages.count > 50 {
+            logMessages.removeFirst()
+        }
+        
+        // 콘솔에도 출력
+        print("[ProxyFlow] \(message)")
     }
     
     // MARK: - Settings Persistence
@@ -106,6 +184,7 @@ class ProxyService: ObservableObject {
         if userDefaults.object(forKey: turnOffOnExitKey) == nil {
             userDefaults.set(true, forKey: turnOffOnExitKey)
         }
+        log("설정 로드 완료 - IP: \(proxyIP), Port: \(proxyPort)")
     }
     
     private func saveSettings() {
@@ -113,72 +192,12 @@ class ProxyService: ObservableObject {
         userDefaults.set(proxyPort, forKey: proxyPortKey)
     }
     
-    /// 현재 SSID에 대한 프로필 저장 (IP/Port가 유효할 때만)
-    private func saveCurrentProfileIfNeeded() {
-        guard !currentSSID.isEmpty, 
-              !proxyIP.isEmpty, 
-              !proxyPort.isEmpty else { return }
-        
-        profileStore.saveProfile(ssid: currentSSID, ip: proxyIP, port: proxyPort)
-    }
-    
-    // MARK: - SSID Detection
-    
-    /// 현재 연결된 Wi-Fi SSID 감지
-    func detectCurrentSSID() async {
-        // CoreWLAN을 사용하여 SSID 감지
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                var ssid = ""
-                
-                if let interface = CWWiFiClient.shared().interface() {
-                    ssid = interface.ssid() ?? ""
-                }
-                
-                DispatchQueue.main.async {
-                    self?.currentSSID = ssid
-                    continuation.resume()
-                }
-            }
-        }
-    }
-    
-    /// 현재 SSID에 해당하는 프로필 적용
-    func applyProfileForCurrentSSID() {
-        guard !currentSSID.isEmpty else { return }
-        
-        if let profile = profileStore.profile(for: currentSSID) {
-            // 저장된 프로필이 있으면 자동 적용
-            proxyIP = profile.ip
-            proxyPort = profile.port
-            profileAutoApplied = true
-            
-            // 프로필 사용 시간 업데이트
-            profileStore.saveProfile(ssid: currentSSID, ip: profile.ip, port: profile.port)
-        } else {
-            profileAutoApplied = false
-        }
-    }
-    
-    /// 현재 설정을 SSID 프로필로 저장
-    func saveCurrentAsProfile() {
-        guard !currentSSID.isEmpty else {
-            errorMessage = "연결된 Wi-Fi가 없습니다."
-            return
-        }
-        guard !proxyIP.isEmpty, !proxyPort.isEmpty else {
-            errorMessage = "IP와 포트를 입력해주세요."
-            return
-        }
-        
-        profileStore.saveProfile(ssid: currentSSID, ip: proxyIP, port: proxyPort)
-        errorMessage = nil
-    }
-    
     // MARK: - Network Service Detection
     
     /// 활성 네트워크 서비스 감지 (Wi-Fi 또는 Ethernet 우선)
     func detectNetworkService() async {
+        log("네트워크 서비스 감지 시작")
+        
         let output = await runCommand("networksetup", arguments: ["-listallnetworkservices"])
         
         let lines = output.components(separatedBy: "\n")
@@ -191,6 +210,7 @@ class ProxyService: ObservableObject {
         for priority in priorityServices {
             if lines.contains(priority) {
                 currentNetworkService = priority
+                log("네트워크 서비스 감지됨: \(priority)")
                 return
             }
         }
@@ -198,8 +218,12 @@ class ProxyService: ObservableObject {
         // 우선순위 서비스가 없으면 첫 번째 유효한 서비스 사용
         if let firstService = lines.first(where: { !$0.contains("Bridge") && !$0.contains("VPN") }) {
             currentNetworkService = firstService
+            log("대체 네트워크 서비스 사용: \(firstService)")
         } else if let anyService = lines.first {
             currentNetworkService = anyService
+            log("첫 번째 네트워크 서비스 사용: \(anyService)")
+        } else {
+            log("네트워크 서비스를 찾을 수 없음")
         }
     }
     
@@ -207,17 +231,17 @@ class ProxyService: ObservableObject {
     
     /// 현재 프록시 상태 새로고침
     func refreshProxyStatus() async {
+        log("프록시 상태 새로고침 시작")
+        
         if currentNetworkService.isEmpty {
             await detectNetworkService()
         }
         
         guard !currentNetworkService.isEmpty else {
             errorMessage = "네트워크 서비스를 찾을 수 없습니다."
+            log("오류: 네트워크 서비스 없음")
             return
         }
-        
-        // SSID도 함께 새로고침
-        await detectCurrentSSID()
         
         let output = await runCommand("networksetup", arguments: ["-getwebproxy", currentNetworkService])
         
@@ -244,6 +268,7 @@ class ProxyService: ObservableObject {
         }
         
         isProxyEnabled = enabled
+        log("프록시 상태: \(enabled ? "활성화" : "비활성화"), 서버: \(server):\(port)")
         
         // 저장된 설정이 없으면 현재 시스템 설정 사용
         if proxyIP.isEmpty && !server.isEmpty {
@@ -261,13 +286,18 @@ class ProxyService: ObservableObject {
     
     /// 프록시 토글 (켜기/끄기)
     func toggleProxy() async {
+        log("프록시 토글 시작 (현재: \(isProxyEnabled ? "ON" : "OFF"))")
         isLoading = true
         errorMessage = nil
         
-        defer { isLoading = false }
+        defer { 
+            isLoading = false 
+            log("프록시 토글 완료")
+        }
         
         guard !currentNetworkService.isEmpty else {
             errorMessage = "네트워크 서비스가 선택되지 않았습니다."
+            log("오류: 네트워크 서비스 없음")
             return
         }
         
@@ -278,8 +308,11 @@ class ProxyService: ObservableObject {
         if newState {
             guard !proxyIP.isEmpty, !proxyPort.isEmpty else {
                 errorMessage = "프록시 IP와 포트를 입력해주세요."
+                log("오류: IP 또는 Port 없음")
                 return
             }
+            
+            log("프록시 설정 중: \(proxyIP):\(proxyPort)")
             
             // HTTP 프록시 설정
             let httpResult = await runCommand("networksetup", arguments: [
@@ -293,12 +326,12 @@ class ProxyService: ObservableObject {
             
             if httpResult.contains("Error") || httpsResult.contains("Error") {
                 errorMessage = "프록시 설정 실패: 권한을 확인해주세요."
+                log("오류: 프록시 설정 실패 - HTTP: \(httpResult), HTTPS: \(httpsResult)")
                 return
             }
-            
-            // 프록시를 켤 때 현재 SSID에 프로필 저장
-            saveCurrentAsProfile()
         }
+        
+        log("프록시 상태 변경: \(stateString)")
         
         // HTTP 프록시 상태 변경
         let httpStateResult = await runCommand("networksetup", arguments: [
@@ -312,6 +345,7 @@ class ProxyService: ObservableObject {
         
         if httpStateResult.contains("Error") || httpsStateResult.contains("Error") {
             errorMessage = "프록시 상태 변경 실패"
+            log("오류: 상태 변경 실패")
             return
         }
         
@@ -319,9 +353,30 @@ class ProxyService: ObservableObject {
         await refreshProxyStatus()
     }
     
+    /// 프록시 끄기 (앱 종료 시 사용) - 동기 버전
+    func turnOffProxySync() {
+        guard !currentNetworkService.isEmpty else { return }
+        
+        log("프록시 끄기 (동기)")
+        
+        let process1 = Process()
+        process1.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        process1.arguments = ["-setwebproxystate", currentNetworkService, "off"]
+        try? process1.run()
+        process1.waitUntilExit()
+        
+        let process2 = Process()
+        process2.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+        process2.arguments = ["-setsecurewebproxystate", currentNetworkService, "off"]
+        try? process2.run()
+        process2.waitUntilExit()
+    }
+    
     /// 프록시 끄기 (앱 종료 시 사용)
     func turnOffProxy() async {
         guard !currentNetworkService.isEmpty, isProxyEnabled else { return }
+        
+        log("프록시 끄기 (비동기)")
         
         _ = await runCommand("networksetup", arguments: [
             "-setwebproxystate", currentNetworkService, "off"
@@ -335,6 +390,7 @@ class ProxyService: ObservableObject {
     func updateProxySettings() async {
         guard !proxyIP.isEmpty, !proxyPort.isEmpty, !currentNetworkService.isEmpty else { return }
         
+        log("프록시 설정 업데이트: \(proxyIP):\(proxyPort)")
         isLoading = true
         defer { isLoading = false }
         
@@ -348,15 +404,12 @@ class ProxyService: ObservableObject {
             "-setsecurewebproxy", currentNetworkService, proxyIP, proxyPort
         ])
         
-        // SSID 프로필로도 저장
-        saveCurrentAsProfile()
-        
         await refreshProxyStatus()
     }
     
     // MARK: - Shell Command Execution
     
-    /// 셸 명령어 비동기 실행
+    /// 셸 명령어 비동기 실행 (타임아웃 5초)
     private func runCommand(_ command: String, arguments: [String]) async -> String {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -370,6 +423,14 @@ class ProxyService: ObservableObject {
                 
                 do {
                     try process.run()
+                    
+                    // 타임아웃 5초
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+                        if process.isRunning {
+                            process.terminate()
+                        }
+                    }
+                    
                     process.waitUntilExit()
                     
                     let data = pipe.fileHandleForReading.readDataToEndOfFile()

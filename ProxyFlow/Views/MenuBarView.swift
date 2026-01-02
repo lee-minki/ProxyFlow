@@ -4,6 +4,8 @@ import SwiftUI
 struct MenuBarView: View {
     @ObservedObject var proxyService: ProxyService
     @State private var showingSettings = false
+    @State private var showingLogs = false
+    @State private var showingHelp = false
     @State private var editingIP: String = ""
     @State private var editingPort: String = ""
     
@@ -27,19 +29,27 @@ struct MenuBarView: View {
             Divider()
                 .padding(.vertical, 8)
             
-            // 설정 입력 섹션
+            // 설정/로그/도움말 섹션
             if showingSettings {
                 settingsSection
-                
-                Divider()
-                    .padding(.vertical, 8)
+                Divider().padding(.vertical, 8)
+            }
+            
+            if showingLogs {
+                logsSection
+                Divider().padding(.vertical, 8)
+            }
+            
+            if showingHelp {
+                helpSection
+                Divider().padding(.vertical, 8)
             }
             
             // 메뉴 버튼들
             menuButtonsSection
         }
         .padding(12)
-        .frame(width: 280)
+        .frame(width: 320)
         .onAppear {
             editingIP = proxyService.proxyIP
             editingPort = proxyService.proxyPort
@@ -55,11 +65,31 @@ struct MenuBarView: View {
                 .foregroundColor(proxyService.isProxyEnabled ? .blue : .secondary)
                 .animation(.easeInOut(duration: 0.3), value: proxyService.isProxyEnabled)
             
-            Text("ProxyFlow")
-                .font(.headline)
-                .fontWeight(.semibold)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("ProxyFlow")
+                    .font(.headline)
+                    .fontWeight(.semibold)
+                
+                Text("v\(AppVersion.string)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
             
             Spacer()
+            
+            // 인터넷 연결 상태 표시
+            if !proxyService.isInternetConnected {
+                HStack(spacing: 4) {
+                    Image(systemName: "wifi.slash")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                    if let since = proxyService.disconnectedSince {
+                        Text(disconnectedTimeString(since: since))
+                            .font(.caption2)
+                            .foregroundColor(.red)
+                    }
+                }
+            }
             
             if proxyService.isLoading {
                 ProgressView()
@@ -68,11 +98,19 @@ struct MenuBarView: View {
         }
     }
     
+    private func disconnectedTimeString(since: Date) -> String {
+        let seconds = Int(-since.timeIntervalSinceNow)
+        if seconds < 60 {
+            return "\(seconds)초"
+        } else {
+            return "\(seconds / 60)분"
+        }
+    }
+    
     // MARK: - Toggle Section
     
     private var toggleSection: some View {
         VStack(spacing: 8) {
-            // 큰 토글 스위치
             HStack {
                 Text("프록시")
                     .font(.subheadline)
@@ -98,7 +136,6 @@ struct MenuBarView: View {
                     .fill(proxyService.isProxyEnabled ? Color.blue.opacity(0.1) : Color.gray.opacity(0.1))
             )
             
-            // 상태 텍스트
             HStack {
                 Circle()
                     .fill(proxyService.isProxyEnabled ? Color.green : Color.gray)
@@ -109,6 +146,18 @@ struct MenuBarView: View {
                     .foregroundColor(.secondary)
                 
                 Spacer()
+                
+                // 인터넷 끊김 시 자동 끄기 카운트다운
+                if proxyService.isProxyEnabled && !proxyService.isInternetConnected && proxyService.autoOffOnDisconnect {
+                    if let since = proxyService.disconnectedSince {
+                        let remaining = proxyService.autoOffTimeout - Int(-since.timeIntervalSinceNow)
+                        if remaining > 0 {
+                            Text("자동 끄기: \(remaining)초")
+                                .font(.caption2)
+                                .foregroundColor(.orange)
+                        }
+                    }
+                }
             }
         }
     }
@@ -121,29 +170,22 @@ struct MenuBarView: View {
             infoRow(icon: "number", label: "포트", value: proxyService.proxyPort.isEmpty ? "-" : proxyService.proxyPort)
             infoRow(icon: "wifi", label: "네트워크", value: proxyService.currentNetworkService.isEmpty ? "감지 중..." : proxyService.currentNetworkService)
             
-            // SSID 정보 표시
+            // 인터넷 연결 상태
             HStack(spacing: 8) {
-                Image(systemName: "wifi.circle")
+                Image(systemName: proxyService.isInternetConnected ? "checkmark.circle.fill" : "xmark.circle.fill")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(proxyService.isInternetConnected ? .green : .red)
                     .frame(width: 16)
                 
-                Text("SSID")
+                Text("인터넷")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .frame(width: 50, alignment: .leading)
                 
-                Text(proxyService.currentSSID.isEmpty ? "감지 중..." : proxyService.currentSSID)
+                Text(proxyService.isInternetConnected ? "연결됨" : "끊김")
                     .font(.caption)
                     .fontWeight(.medium)
-                    .lineLimit(1)
-                
-                // 프로필 자동 적용 표시
-                if proxyService.profileAutoApplied {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.caption2)
-                        .foregroundColor(.green)
-                }
+                    .foregroundColor(proxyService.isInternetConnected ? .primary : .red)
                 
                 Spacer()
             }
@@ -156,6 +198,7 @@ struct MenuBarView: View {
                     Text(error)
                         .font(.caption)
                         .foregroundColor(.orange)
+                        .lineLimit(2)
                 }
                 .padding(.top, 4)
             }
@@ -192,7 +235,6 @@ struct MenuBarView: View {
                 .foregroundColor(.secondary)
                 .fontWeight(.semibold)
             
-            // IP 입력
             HStack {
                 Text("IP:")
                     .font(.caption)
@@ -203,7 +245,6 @@ struct MenuBarView: View {
                     .font(.caption)
             }
             
-            // 포트 입력
             HStack {
                 Text("Port:")
                     .font(.caption)
@@ -214,7 +255,6 @@ struct MenuBarView: View {
                     .font(.caption)
             }
             
-            // 저장 버튼
             HStack {
                 Spacer()
                 
@@ -235,15 +275,13 @@ struct MenuBarView: View {
                 .disabled(editingIP.isEmpty || editingPort.isEmpty)
             }
             
-            Divider()
-                .padding(.vertical, 6)
+            Divider().padding(.vertical, 6)
             
             Text("옵션")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fontWeight(.semibold)
             
-            // 앱 종료 시 프록시 끄기 옵션
             Toggle("앱 종료 시 프록시 끄기", isOn: Binding(
                 get: { proxyService.turnOffProxyOnExit },
                 set: { proxyService.turnOffProxyOnExit = $0 }
@@ -251,26 +289,12 @@ struct MenuBarView: View {
             .font(.caption)
             .toggleStyle(.checkbox)
             
-            // SSID 프로필 자동 적용 옵션
-            Toggle("Wi-Fi별 설정 자동 적용", isOn: Binding(
-                get: { proxyService.autoApplySSIDProfile },
-                set: { proxyService.autoApplySSIDProfile = $0 }
+            Toggle("인터넷 끊김 시 \(proxyService.autoOffTimeout)초 후 자동 끄기", isOn: Binding(
+                get: { proxyService.autoOffOnDisconnect },
+                set: { proxyService.autoOffOnDisconnect = $0 }
             ))
             .font(.caption)
             .toggleStyle(.checkbox)
-            
-            // 저장된 프로필 개수 표시
-            if !proxyService.profileStore.profiles.isEmpty {
-                HStack {
-                    Image(systemName: "list.bullet")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text("저장된 Wi-Fi: \(proxyService.profileStore.profiles.count)개")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.top, 2)
-            }
         }
         .padding(10)
         .background(
@@ -279,14 +303,118 @@ struct MenuBarView: View {
         )
     }
     
+    // MARK: - Logs Section
+    
+    private var logsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("로그")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fontWeight(.semibold)
+                
+                Spacer()
+                
+                Button("지우기") {
+                    proxyService.logMessages.removeAll()
+                }
+                .font(.caption2)
+                .buttonStyle(.plain)
+                .foregroundColor(.blue)
+            }
+            
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(proxyService.logMessages.reversed(), id: \.self) { log in
+                        Text(log)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 100)
+            .background(Color.black.opacity(0.05))
+            .cornerRadius(4)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.gray.opacity(0.1))
+        )
+    }
+    
+    // MARK: - Help Section
+    
+    private var helpSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("💡 도움말")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fontWeight(.semibold)
+            
+            VStack(alignment: .leading, spacing: 6) {
+                helpItem(
+                    icon: "questionmark.circle",
+                    title: "프록시란?",
+                    description: "프록시 서버를 통해 인터넷에 연결하는 방식입니다. 회사나 특정 네트워크에서 필요할 수 있습니다."
+                )
+                
+                helpItem(
+                    icon: "wifi.exclamationmark",
+                    title: "Wi-Fi 변경 시 인터넷 안됨",
+                    description: "다른 Wi-Fi로 이동하면 프록시 설정이 맞지 않아 인터넷이 안될 수 있습니다. 프록시를 끄거나 설정을 변경하세요."
+                )
+                
+                helpItem(
+                    icon: "clock.arrow.circlepath",
+                    title: "자동 끄기 기능",
+                    description: "인터넷이 2분 이상 끊기면 프록시가 자동으로 꺼집니다. 설정에서 비활성화할 수 있습니다."
+                )
+                
+                helpItem(
+                    icon: "power",
+                    title: "앱 종료 시",
+                    description: "앱 종료 시 프록시가 자동으로 꺼져 인터넷 연결 문제를 방지합니다."
+                )
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.blue.opacity(0.05))
+        )
+    }
+    
+    private func helpItem(icon: String, title: String, description: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundColor(.blue)
+                .frame(width: 16)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                
+                Text(description)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+    
     // MARK: - Menu Buttons Section
     
     private var menuButtonsSection: some View {
         VStack(spacing: 2) {
-            // 설정 버튼
             menuButton(icon: "gearshape", title: showingSettings ? "설정 닫기" : "설정") {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     showingSettings.toggle()
+                    showingLogs = false
+                    showingHelp = false
                     if showingSettings {
                         editingIP = proxyService.proxyIP
                         editingPort = proxyService.proxyPort
@@ -294,34 +422,43 @@ struct MenuBarView: View {
                 }
             }
             
-            // 새로고침 버튼
+            menuButton(icon: "doc.text", title: showingLogs ? "로그 닫기" : "로그 보기") {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showingLogs.toggle()
+                    showingSettings = false
+                    showingHelp = false
+                }
+            }
+            
+            menuButton(icon: "questionmark.circle", title: showingHelp ? "도움말 닫기" : "도움말") {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showingHelp.toggle()
+                    showingSettings = false
+                    showingLogs = false
+                }
+            }
+            
             menuButton(icon: "arrow.clockwise", title: "상태 새로고침") {
                 Task {
                     await proxyService.refreshProxyStatus()
                 }
             }
             
-            Divider()
-                .padding(.vertical, 4)
+            Divider().padding(.vertical, 4)
             
-            // 후원 버튼
             menuButton(icon: "heart.fill", title: "개발자 후원 ($1)", iconColor: .pink) {
                 if let url = URL(string: "https://buymeacoffee.com") {
                     NSWorkspace.shared.open(url)
                 }
             }
             
-            Divider()
-                .padding(.vertical, 4)
+            Divider().padding(.vertical, 4)
             
-            // 종료 버튼
             menuButton(icon: "power", title: "종료", iconColor: .red) {
-                Task {
-                    if proxyService.turnOffProxyOnExit {
-                        await proxyService.turnOffProxy()
-                    }
-                    NSApplication.shared.terminate(nil)
+                if proxyService.turnOffProxyOnExit {
+                    proxyService.turnOffProxySync()
                 }
+                NSApplication.shared.terminate(nil)
             }
         }
     }
@@ -346,7 +483,7 @@ struct MenuBarView: View {
         .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(Color.gray.opacity(0.001)) // 클릭 영역 확보
+                .fill(Color.gray.opacity(0.001))
         )
         .onHover { isHovered in
             if isHovered {
@@ -360,5 +497,5 @@ struct MenuBarView: View {
 
 #Preview {
     MenuBarView(proxyService: ProxyService())
-        .frame(width: 280)
+        .frame(width: 320)
 }

@@ -1,12 +1,9 @@
 import SwiftUI
 
 /// ProxyFlow - macOS 메뉴바 프록시 토글 앱
-/// 
-/// HTTP/HTTPS 시스템 프록시 설정을 한 번의 클릭으로 켜고 끌 수 있는 경량 앱입니다.
 @main
 struct ProxyFlowApp: App {
     @StateObject private var proxyService = ProxyService()
-    @Environment(\.openWindow) private var openWindow
     
     var body: some Scene {
         // 메뉴바 앱 (메인 윈도우 없음)
@@ -28,36 +25,37 @@ struct ProxyFlowApp: App {
     }
     
     init() {
-        // 앱 종료 시 프록시 끄기 등록
+        // 앱 종료 시 프록시 끄기 등록 (동기적으로 처리)
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
         ) { _ in
-            // 동기적으로 프록시 끄기 (앱 종료 전)
             if UserDefaults.standard.bool(forKey: "ProxyFlow.turnOffOnExit") {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-                
-                // 현재 저장된 네트워크 서비스 가져오기
-                let service = getActiveNetworkService()
-                
-                if !service.isEmpty {
-                    // HTTP 프록시 끄기
-                    process.arguments = ["-setwebproxystate", service, "off"]
-                    try? process.run()
-                    process.waitUntilExit()
-                    
-                    // HTTPS 프록시 끄기
-                    let process2 = Process()
-                    process2.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-                    process2.arguments = ["-setsecurewebproxystate", service, "off"]
-                    try? process2.run()
-                    process2.waitUntilExit()
-                }
+                turnOffProxyOnTerminate()
             }
         }
     }
+}
+
+/// 앱 종료 시 프록시 끄기 (동기적)
+private func turnOffProxyOnTerminate() {
+    let service = getActiveNetworkService()
+    guard !service.isEmpty else { return }
+    
+    // HTTP 프록시 끄기
+    let process1 = Process()
+    process1.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+    process1.arguments = ["-setwebproxystate", service, "off"]
+    try? process1.run()
+    process1.waitUntilExit()
+    
+    // HTTPS 프록시 끄기
+    let process2 = Process()
+    process2.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+    process2.arguments = ["-setsecurewebproxystate", service, "off"]
+    try? process2.run()
+    process2.waitUntilExit()
 }
 
 /// 활성 네트워크 서비스 가져오기 (동기)
