@@ -1,0 +1,96 @@
+import SwiftUI
+
+/// ProxyFlow - macOS 메뉴바 프록시 토글 앱
+/// 
+/// HTTP/HTTPS 시스템 프록시 설정을 한 번의 클릭으로 켜고 끌 수 있는 경량 앱입니다.
+@main
+struct ProxyFlowApp: App {
+    @StateObject private var proxyService = ProxyService()
+    @Environment(\.openWindow) private var openWindow
+    
+    var body: some Scene {
+        // 메뉴바 앱 (메인 윈도우 없음)
+        MenuBarExtra {
+            MenuBarView(proxyService: proxyService)
+        } label: {
+            menuBarIcon
+        }
+        .menuBarExtraStyle(.window)
+    }
+    
+    /// 메뉴바 아이콘 (프록시 상태에 따라 변경)
+    private var menuBarIcon: some View {
+        Image(systemName: proxyService.isProxyEnabled 
+              ? "network.badge.shield.half.filled" 
+              : "network")
+            .symbolRenderingMode(.hierarchical)
+            .foregroundColor(proxyService.isProxyEnabled ? .blue : .primary)
+    }
+    
+    init() {
+        // 앱 종료 시 프록시 끄기 등록
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            // 동기적으로 프록시 끄기 (앱 종료 전)
+            if UserDefaults.standard.bool(forKey: "ProxyFlow.turnOffOnExit") {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+                
+                // 현재 저장된 네트워크 서비스 가져오기
+                let service = getActiveNetworkService()
+                
+                if !service.isEmpty {
+                    // HTTP 프록시 끄기
+                    process.arguments = ["-setwebproxystate", service, "off"]
+                    try? process.run()
+                    process.waitUntilExit()
+                    
+                    // HTTPS 프록시 끄기
+                    let process2 = Process()
+                    process2.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+                    process2.arguments = ["-setsecurewebproxystate", service, "off"]
+                    try? process2.run()
+                    process2.waitUntilExit()
+                }
+            }
+        }
+    }
+}
+
+/// 활성 네트워크 서비스 가져오기 (동기)
+private func getActiveNetworkService() -> String {
+    let process = Process()
+    let pipe = Pipe()
+    
+    process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
+    process.arguments = ["-listallnetworkservices"]
+    process.standardOutput = pipe
+    
+    do {
+        try process.run()
+        process.waitUntilExit()
+        
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        
+        let lines = output.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("*") && !$0.contains("asterisk") }
+        
+        // 우선순위: Wi-Fi > Ethernet
+        let priorityServices = ["Wi-Fi", "Ethernet", "USB 10/100/1000 LAN"]
+        
+        for priority in priorityServices {
+            if lines.contains(priority) {
+                return priority
+            }
+        }
+        
+        return lines.first ?? ""
+    } catch {
+        return ""
+    }
+}

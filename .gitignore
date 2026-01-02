@@ -1,0 +1,28 @@
+# Build artifacts
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+*.dSYM
+*.dSYM.zip
+
+# Xcode
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+
+# Package.resolved (optional - can be committed for reproducible builds)
+# Package.resolved
+
+# IDE
+.idea/
+*.swp
+*~
+
+# Misc
+*.log
+.env
