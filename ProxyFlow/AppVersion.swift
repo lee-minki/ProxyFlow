@@ -2,7 +2,7 @@
 struct AppVersion {
     static let major = 0
     static let minor = 0
-    static let patch = 2
+    static let patch = 3
     
     static var string: String {
         "\(major).\(minor).\(patch)"

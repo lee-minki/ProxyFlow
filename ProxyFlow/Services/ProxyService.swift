@@ -312,6 +312,13 @@ class ProxyService: ObservableObject {
                 return
             }
             
+            // 포트 번호 숫자 검증
+            guard Int(proxyPort) != nil else {
+                errorMessage = "포트 번호는 숫자여야 합니다."
+                log("오류: 잘못된 포트 번호 - \(proxyPort)")
+                return
+            }
+            
             log("프록시 설정 중: \(proxyIP):\(proxyPort)")
             
             // HTTP 프록시 설정
@@ -421,23 +428,32 @@ class ProxyService: ObservableObject {
                 process.standardOutput = pipe
                 process.standardError = pipe
                 
+                var hasResumed = false
+                
                 do {
                     try process.run()
                     
                     // 타임아웃 5초
                     DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
                         if process.isRunning {
+                            // 프로세스가 실행 중일 때만 종료 시도
                             process.terminate()
                         }
                     }
                     
                     process.waitUntilExit()
                     
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    let output = String(data: data, encoding: .utf8) ?? ""
-                    continuation.resume(returning: output)
+                    if !hasResumed {
+                        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                        let output = String(data: data, encoding: .utf8) ?? ""
+                        hasResumed = true
+                        continuation.resume(returning: output)
+                    }
                 } catch {
-                    continuation.resume(returning: "Error: \(error.localizedDescription)")
+                    if !hasResumed {
+                        hasResumed = true
+                        continuation.resume(returning: "Error: \(error.localizedDescription)")
+                    }
                 }
             }
         }

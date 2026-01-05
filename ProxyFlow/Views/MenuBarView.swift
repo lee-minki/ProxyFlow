@@ -253,12 +253,20 @@ struct MenuBarView: View {
                 TextField("8080", text: $editingPort)
                     .textFieldStyle(.roundedBorder)
                     .font(.caption)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.red, lineWidth: (Int(editingPort) == nil && !editingPort.isEmpty) ? 1 : 0)
+                    )
             }
             
             HStack {
                 Spacer()
                 
                 Button("저장") {
+                    // 입력 검증
+                    guard !editingIP.isEmpty else { return }
+                    guard let _ = Int(editingPort) else { return }
+                    
                     proxyService.proxyIP = editingIP
                     proxyService.proxyPort = editingPort
                     
@@ -272,7 +280,7 @@ struct MenuBarView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .disabled(editingIP.isEmpty || editingPort.isEmpty)
+                .disabled(editingIP.isEmpty || editingPort.isEmpty || Int(editingPort) == nil)
             }
             
             Divider().padding(.vertical, 6)
