@@ -12,11 +12,30 @@
 
 ---
 
-## 📥 다운로드
+## ⭐ 앱 다운로드 (Get the App)
 
-### [⬇️ ProxyFlow-v0.0.2.dmg 다운로드](https://github.com/lee-minki/ProxyFlow/releases/latest/download/ProxyFlow-v0.0.2.dmg)
+### Option 1: 바로 사용하기 (추천)
+**[📦 Gumroad에서 다운로드 ($1)](https://gumroad.com/l/YOUR_GUMROAD_LINK_HERE)**
+- ✅ 미리 빌드된 설치 파일 (.dmg)
+- ✅ 설치만 하면 즉시 사용 가능
+- ✅ 개발자 후원 및 지속적인 업데이트 지원!
 
-> DMG 파일을 열고 → ProxyFlow.app을 Applications 폴더로 드래그하세요!
+### Option 2: 소스에서 직접 빌드 (무료)
+```bash
+git clone https://github.com/lee-minki/ProxyFlow.git
+cd ProxyFlow
+# Xcode 및 Swift 개발 환경 필요
+swift build -c release
+```
+
+## 💡 왜 $1인가요?
+직접 빌드하려면 다음 과정이 필요합니다:
+- 터미널 및 git 사용법 숙지
+- Xcode Command Line Tools 설치
+- 직접 빌드 및 권한 설정
+- 20분 이상의 시간 소요
+
+**커피 한 잔 값으로 시간을 아끼고 완성된 앱을 바로 사용하세요! ☕**
 
 ---
 
@@ -46,7 +65,7 @@
 
 ## 🚀 설치 방법
 
-1. 위의 다운로드 링크 클릭
+1. 위 링크에서 DMG 파일 다운로드 또는 직접 빌드
 2. DMG 파일 열기
 3. ProxyFlow.app을 Applications 폴더로 드래그
 4. 앱 실행 → 메뉴바에서 네트워크 아이콘 확인!
@@ -76,5 +95,5 @@
 </a>
 
 ## 📄 라이선스
-
+ 
 MIT License
